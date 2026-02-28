@@ -2,6 +2,8 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <lebirun.h>
+#include <fcntl.h>
+#include <string.h>
 #include "log.h"
 #include "service.h"
 
@@ -101,9 +103,11 @@ static void print_banner(void)
 
 int main(void)
 {
-    int shell_pid;
+    int getty_pids[MAX_CONSOLES];
+    int num_cons;
     int status;
     int wpid;
+    int i;
     char *argv[2];
     char *envp[1];
 
@@ -124,14 +128,20 @@ restart:
     g_reboot = 0;
     g_soft_reboot = 0;
 
-    log_info("Launching shell: " SHELL_PATH);
-    shell_pid = spawn_shell();
-    if (shell_pid < 0) {
-        log_fail("Could not launch shell");
-        for (;;)
-            sleep(1);
+    num_cons = get_num_consoles();
+
+    for (i = 0; i < MAX_CONSOLES; i++)
+        getty_pids[i] = -1;
+
+    for (i = 0; i < num_cons; i++) {
+        log_info("Spawning getty on console");
+        getty_pids[i] = spawn_getty(i);
+        if (getty_pids[i] < 0) {
+            log_fail("Could not launch getty");
+        } else {
+            log_ok("Getty launched");
+        }
     }
-    log_ok("Shell launched");
 
     for (;;) {
         if (g_shutdown) {
@@ -148,21 +158,22 @@ restart:
             argv[1] = (char *)0;
             envp[0] = (char *)0;
             execve("/bin/init", argv, envp);
-            log_warn("execve failed, falling back to shell respawn");
+            log_warn("execve failed, falling back to getty respawn");
             goto restart;
         }
 
         wpid = waitpid(-1, &status, WNOHANG);
-        if (wpid == shell_pid) {
-            log_warn("Shell exited, respawning...");
-            sleep(1);
-            shell_pid = spawn_shell();
-            if (shell_pid < 0) {
-                log_fail("Could not respawn shell");
-            } else {
-                log_ok("Shell respawned");
+        if (wpid > 0) {
+            for (i = 0; i < num_cons; i++) {
+                if (wpid == getty_pids[i]) {
+                    sleep(1);
+                    getty_pids[i] = spawn_getty(i);
+                    if (getty_pids[i] < 0)
+                        log_fail("Could not respawn getty");
+                    break;
+                }
             }
-        } else if (wpid <= 0) {
+        } else {
             sleep(1);
         }
     }
