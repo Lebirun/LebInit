@@ -1,6 +1,19 @@
 CC = i686-elf-gcc
 STRIP = i686-elf-strip
 
+V ?= 0
+ifeq ($(V),0)
+  Q = @
+  MSG_CC    = @printf '  CC      %s\n' $<;
+  MSG_LD    = @printf '  LD      %s\n' $@;
+  MSG_STRIP = @printf '  STRIP   %s\n' $@;
+else
+  Q =
+  MSG_CC =
+  MSG_LD =
+  MSG_STRIP =
+endif
+
 LIBC = ../../libc
 LIBC_ABS = $(abspath $(LIBC))
 
@@ -28,21 +41,21 @@ LEBINIT_OBJS = $(LEBINIT_SRCS:.c=.o)
 all: init.bin lebinit.bin
 
 %.o: %.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(MSG_CC)$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
 init.bin: $(OBJS) $(CRT1) $(CRTI) $(CRTN) $(LIBC_A)
-	$(CC) -nostdlib -static -Wl,-z,noexecstack -Wl,--gc-sections -T $(LD_SCRIPT) -L$(LIBC)/leblibc/build-i386/lib -o $@ $(CRT1) $(CRTI) $(OBJS) -lc $(CRTN) -lgcc
+	$(MSG_LD)$(CC) -nostdlib -static -Wl,-z,noexecstack -Wl,--gc-sections -T $(LD_SCRIPT) -L$(LIBC)/leblibc/build-i386/lib -o $@ $(CRT1) $(CRTI) $(OBJS) -lc $(CRTN) -lgcc
 
 lebinit.bin: $(LEBINIT_OBJS) $(CRT1) $(CRTI) $(CRTN) $(LIBC_A)
-	$(CC) -nostdlib -static -Wl,-z,noexecstack -Wl,--gc-sections -T $(LD_SCRIPT) -L$(LIBC)/leblibc/build-i386/lib -o $@ $(CRT1) $(CRTI) $(LEBINIT_OBJS) -lc $(CRTN) -lgcc
+	$(MSG_LD)$(CC) -nostdlib -static -Wl,-z,noexecstack -Wl,--gc-sections -T $(LD_SCRIPT) -L$(LIBC)/leblibc/build-i386/lib -o $@ $(CRT1) $(CRTI) $(LEBINIT_OBJS) -lc $(CRTN) -lgcc
 
 stage: all
-	mkdir -p $(SYSROOT_BIN)
-	cp init.bin $(SYSROOT_BIN)/init
-	$(STRIP) -s $(SYSROOT_BIN)/init
-	mkdir -p $(SYSROOT_SBIN)
-	cp lebinit.bin $(SYSROOT_SBIN)/lebinit
-	$(STRIP) -s $(SYSROOT_SBIN)/lebinit
+	$(Q)mkdir -p $(SYSROOT_BIN)
+	$(Q)cp init.bin $(SYSROOT_BIN)/init
+	$(MSG_STRIP)$(STRIP) -s $(SYSROOT_BIN)/init
+	$(Q)mkdir -p $(SYSROOT_SBIN)
+	$(Q)cp lebinit.bin $(SYSROOT_SBIN)/lebinit
+	$(MSG_STRIP)$(STRIP) -s $(SYSROOT_SBIN)/lebinit
 
 clean:
 	rm -f $(OBJS) $(LEBINIT_OBJS) init.bin lebinit.bin
