@@ -103,11 +103,10 @@ static void print_banner(void)
 
 int main(void)
 {
-    int getty_pids[MAX_CONSOLES];
-    int num_cons;
+    lservice_t services[MAX_SERVICES];
+    int num_svcs;
     int status;
     int wpid;
-    int i;
     char *argv[2];
     char *envp[1];
 
@@ -128,51 +127,37 @@ restart:
     g_reboot = 0;
     g_soft_reboot = 0;
 
-    num_cons = get_num_consoles();
-
-    for (i = 0; i < MAX_CONSOLES; i++)
-        getty_pids[i] = -1;
-
-    for (i = 0; i < num_cons; i++) {
-        log_info("Spawning getty on console");
-        getty_pids[i] = spawn_getty(i);
-        if (getty_pids[i] < 0) {
-            log_fail("Could not launch getty");
-        } else {
-            log_ok("Getty launched");
-        }
+    num_svcs = services_load(services, MAX_SERVICES);
+    if (num_svcs > 0) {
+        log_info("Starting services...");
+        services_start_all(services, num_svcs);
     }
 
     for (;;) {
         if (g_shutdown) {
+            services_stop_all(services, num_svcs);
             do_shutdown();
         }
         if (g_reboot) {
+            services_stop_all(services, num_svcs);
             do_reboot();
         }
         if (g_soft_reboot) {
             log_info("Soft-reboot: restarting userspace...");
+            services_stop_all(services, num_svcs);
             kill_all_children();
             log_ok("Userspace stopped, restarting init");
-            argv[0] = "/bin/init";
+            argv[0] = "/sbin/init";
             argv[1] = (char *)0;
             envp[0] = (char *)0;
-            execve("/bin/init", argv, envp);
-            log_warn("execve failed, falling back to getty respawn");
+            execve("/sbin/init", argv, envp);
+            log_warn("execve failed, falling back to service respawn");
             goto restart;
         }
 
         wpid = waitpid(-1, &status, WNOHANG);
         if (wpid > 0) {
-            for (i = 0; i < num_cons; i++) {
-                if (wpid == getty_pids[i]) {
-                    sleep(1);
-                    getty_pids[i] = spawn_getty(i);
-                    if (getty_pids[i] < 0)
-                        log_fail("Could not respawn getty");
-                    break;
-                }
-            }
+            service_check_respawn(services, num_svcs, wpid);
         } else {
             sleep(1);
         }

@@ -13,9 +13,23 @@
 
 static void log_write(const char *prefix, const char *color, const char *msg)
 {
-    WRITE_LIT(1, COLOR_BOLD);
-    write(1, color, strlen(color));
-    write(1, prefix, strlen(prefix));
+    char buf[64];
+    size_t clen;
+    size_t plen;
+    size_t blen;
+    size_t pos;
+
+    clen = strlen(color);
+    plen = strlen(prefix);
+    blen = sizeof(COLOR_BOLD) - 1;
+    pos = 0;
+    memcpy(buf + pos, COLOR_BOLD, blen);
+    pos += blen;
+    memcpy(buf + pos, color, clen);
+    pos += clen;
+    memcpy(buf + pos, prefix, plen);
+    pos += plen;
+    write(1, buf, pos);
     WRITE_LIT(1, COLOR_RESET " ");
     write(1, msg, strlen(msg));
     write(1, "\n", 1);

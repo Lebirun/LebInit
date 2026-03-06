@@ -50,10 +50,9 @@ lebinit.bin: $(LEBINIT_OBJS) $(CRT1) $(CRTI) $(CRTN) $(LIBC_A)
 	$(MSG_LD)$(CC) -nostdlib -static -Wl,-z,noexecstack -Wl,--gc-sections -T $(LD_SCRIPT) -L$(LIBC)/leblibc/build-i386/lib -o $@ $(CRT1) $(CRTI) $(LEBINIT_OBJS) -lc $(CRTN) -lgcc
 
 stage: all
-	$(Q)mkdir -p $(SYSROOT_BIN)
-	$(Q)cp init.bin $(SYSROOT_BIN)/init
-	$(MSG_STRIP)$(STRIP) -s $(SYSROOT_BIN)/init
 	$(Q)mkdir -p $(SYSROOT_SBIN)
+	$(Q)cp init.bin $(SYSROOT_SBIN)/init
+	$(MSG_STRIP)$(STRIP) -s $(SYSROOT_SBIN)/init
 	$(Q)cp lebinit.bin $(SYSROOT_SBIN)/lebinit
 	$(MSG_STRIP)$(STRIP) -s $(SYSROOT_SBIN)/lebinit
 
