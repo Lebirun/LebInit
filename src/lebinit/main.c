@@ -1,6 +1,8 @@
 #include <unistd.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <lebirun.h>
 
 #define WRITE_LIT(fd, lit) write((fd), (lit), sizeof(lit) - 1)
 
@@ -38,6 +40,8 @@ int main(int argc, char **argv)
 		usage();
 		return 1;
 	}
+
+	console_switch(0);
 
 	if (kill(1, sig) < 0) {
 		WRITE_LIT(2, "lebinit: failed to signal init\n");
