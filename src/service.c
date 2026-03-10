@@ -146,6 +146,8 @@ static int parse_lservice(const char *path, lservice_t *svc)
     svc->restart_delay = 3;
     svc->instances = SVC_INSTANCES_NONE;
     svc->pid = -1;
+    svc->silent = 0;
+    svc->console = -1;
     for (i = 0; i < MAX_CONSOLES; i++)
         svc->instance_pids[i] = -1;
 
@@ -211,6 +213,8 @@ static int parse_lservice(const char *path, lservice_t *svc)
                 strncpy(svc->start_msg, val, sizeof(svc->start_msg) - 1);
             else if (strcmp(key, "OkMsg") == 0)
                 strncpy(svc->ok_msg, val, sizeof(svc->ok_msg) - 1);
+            else if (strcmp(key, "Silent") == 0)
+                svc->silent = (strcmp(val, "yes") == 0 || strcmp(val, "1") == 0);
         } else if (in_exec) {
             if (strcmp(key, "Start") == 0)
                 strncpy(svc->exec_start, val, sizeof(svc->exec_start) - 1);
@@ -226,6 +230,10 @@ static int parse_lservice(const char *path, lservice_t *svc)
             } else if (strcmp(key, "Instances") == 0) {
                 if (strcmp(val, "auto") == 0)
                     svc->instances = SVC_INSTANCES_AUTO;
+            } else if (strcmp(key, "Console") == 0) {
+                svc->console = atoi(val);
+                if (svc->console < 0) svc->console = 0;
+                if (svc->console >= MAX_CONSOLES) svc->console = MAX_CONSOLES - 1;
             }
         } else if (in_health) {
             if (strcmp(key, "Restart") == 0) {
@@ -241,6 +249,8 @@ static int parse_lservice(const char *path, lservice_t *svc)
                     svc->restart_delay = 1;
             } else if (strcmp(key, "After") == 0) {
                 strncpy(svc->after, val, sizeof(svc->after) - 1);
+            } else if (strcmp(key, "Before") == 0) {
+                strncpy(svc->before, val, sizeof(svc->before) - 1);
             }
         }
 
@@ -343,6 +353,12 @@ int service_start(lservice_t *svc)
 
     if (pid == 0) {
         setsid();
+        if (svc->console >= 0) {
+            if (console_setid(svc->console) < 0)
+                _exit(126);
+            ioctl(0, TIOCSCTTY, 0);
+            tcsetpgrp(0, getpid());
+        }
         argv[0] = "/bin/sh";
         argv[1] = "-c";
         argv[2] = svc->exec_start;
@@ -406,27 +422,114 @@ void service_stop(lservice_t *svc)
     }
 }
 
+static int svc_find_by_name(lservice_t *svcs, int count, const char *name)
+{
+    int i;
+
+    for (i = 0; i < count; i++) {
+        if (strcmp(svcs[i].name, name) == 0)
+            return i;
+    }
+    return -1;
+}
+
+static void svc_sort(lservice_t *svcs, int count, int *order)
+{
+    int placed[MAX_SERVICES];
+    int out;
+    int i;
+    int dep;
+    int changed;
+    int pass;
+
+    for (i = 0; i < count; i++)
+        placed[i] = 0;
+    out = 0;
+
+    for (pass = 0; pass < count; pass++) {
+        changed = 0;
+        for (i = 0; i < count; i++) {
+            if (placed[i])
+                continue;
+
+            if (svcs[i].after[0] != '\0') {
+                dep = svc_find_by_name(svcs, count, svcs[i].after);
+                if (dep >= 0 && !placed[dep])
+                    continue;
+            }
+
+            placed[i] = 1;
+            order[out++] = i;
+            changed = 1;
+        }
+        if (!changed)
+            break;
+    }
+
+    for (i = 0; i < count; i++) {
+        if (!placed[i])
+            order[out++] = i;
+    }
+
+    for (i = 0; i < count; i++) {
+        if (svcs[i].before[0] != '\0') {
+            dep = svc_find_by_name(svcs, count, svcs[i].before);
+            if (dep >= 0) {
+                int my_pos;
+                int dep_pos;
+                int j;
+                int tmp;
+
+                my_pos = -1;
+                dep_pos = -1;
+                for (j = 0; j < count; j++) {
+                    if (order[j] == i)
+                        my_pos = j;
+                    if (order[j] == dep)
+                        dep_pos = j;
+                }
+                if (my_pos >= 0 && dep_pos >= 0 && my_pos > dep_pos) {
+                    tmp = order[my_pos];
+                    for (j = my_pos; j > dep_pos; j--)
+                        order[j] = order[j - 1];
+                    order[dep_pos] = tmp;
+                }
+            }
+        }
+    }
+}
+
 void services_start_all(lservice_t *svcs, int count)
 {
     int i;
+    int idx;
     const char *msg;
+    int order[MAX_SERVICES];
+
+    svc_sort(svcs, count, order);
 
     for (i = 0; i < count; i++) {
-        if (svcs[i].start_msg[0] != '\0')
-            msg = svcs[i].start_msg;
-        else if (svcs[i].description[0] != '\0')
-            msg = svcs[i].description;
-        else
-            msg = svcs[i].name;
-        log_info(msg);
-
-        if (service_start(&svcs[i]) >= 0) {
-            if (svcs[i].ok_msg[0] != '\0')
-                log_ok(svcs[i].ok_msg);
+        idx = order[i];
+        if (!svcs[idx].silent) {
+            if (svcs[idx].start_msg[0] != '\0')
+                msg = svcs[idx].start_msg;
+            else if (svcs[idx].description[0] != '\0')
+                msg = svcs[idx].description;
             else
-                log_ok(svcs[i].name);
+                msg = svcs[idx].name;
+            log_info(msg);
+        }
+
+        if (service_start(&svcs[idx]) >= 0) {
+            if (!svcs[idx].silent) {
+                if (svcs[idx].ok_msg[0] != '\0')
+                    log_ok(svcs[idx].ok_msg);
+                else
+                    log_ok(svcs[idx].name);
+            }
         } else {
-            log_fail(svcs[i].name);
+            if (!svcs[idx].silent)
+                log_fail(svcs[idx].name);
         }
     }
 }

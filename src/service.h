@@ -24,6 +24,7 @@ typedef struct {
     char exec_start[128];
     char exec_stop[64];
     char after[64];
+    char before[64];
     char start_msg[64];
     char ok_msg[64];
     int type;
@@ -35,6 +36,8 @@ typedef struct {
     int loaded;
     int started;
     int failed;
+    int silent;
+    int console;
 } lservice_t;
 
 int spawn_shell(void);
