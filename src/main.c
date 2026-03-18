@@ -147,10 +147,10 @@ restart:
             services_stop_all(services, num_svcs);
             kill_all_children();
             log_ok("Userspace stopped, restarting init");
-            argv[0] = "/sbin/init";
+            argv[0] = "/init";
             argv[1] = (char *)0;
             envp[0] = (char *)0;
-            execve("/sbin/init", argv, envp);
+            execve("/init", argv, envp);
             log_warn("execve failed, falling back to service respawn");
             goto restart;
         }
