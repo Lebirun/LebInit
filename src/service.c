@@ -520,8 +520,15 @@ void services_start_all(lservice_t *svcs, int count)
             log_info(msg);
         }
 
+        if (svcs[idx].instances == SVC_INSTANCES_AUTO && !svcs[idx].silent) {
+            if (svcs[idx].ok_msg[0] != '\0')
+                log_ok(svcs[idx].ok_msg);
+            else
+                log_ok(svcs[idx].name);
+        }
+
         if (service_start(&svcs[idx]) >= 0) {
-            if (!svcs[idx].silent) {
+            if (!svcs[idx].silent && svcs[idx].instances != SVC_INSTANCES_AUTO) {
                 if (svcs[idx].ok_msg[0] != '\0')
                     log_ok(svcs[idx].ok_msg);
                 else
