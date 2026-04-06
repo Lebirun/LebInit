@@ -33,30 +33,35 @@ SYSROOT_SBIN = ../../root/sbin
 SYSROOT_ROOT = ../../root
 
 SRCS = src/main.c src/log.c src/service.c
-OBJS = $(SRCS:.c=.o)
+OBJS = $(patsubst src/%.c,build/%.o,$(SRCS))
 
 LEBINIT_SRCS = src/lebinit/main.c
-LEBINIT_OBJS = $(LEBINIT_SRCS:.c=.o)
+LEBINIT_OBJS = $(patsubst src/%.c,build/%.o,$(LEBINIT_SRCS))
+
+BINDIR = bin
 
 .PHONY: all clean stage
 
-all: init.bin lebinit.bin
+all: $(BINDIR)/init.bin $(BINDIR)/lebinit.bin
 
-%.o: %.c
+build/%.o: src/%.c
+	$(Q)mkdir -p $(dir $@)
 	$(MSG_CC)$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
-init.bin: $(OBJS) $(CRT1) $(CRTI) $(CRTN) $(LIBC_A)
+$(BINDIR)/init.bin: $(OBJS) $(CRT1) $(CRTI) $(CRTN) $(LIBC_A)
+	$(Q)mkdir -p $(BINDIR)
 	$(MSG_LD)$(CC) -nostdlib -static -Wl,-z,noexecstack -Wl,--gc-sections -T $(LD_SCRIPT) -L$(SYSROOT)/usr/lib -o $@ $(CRT1) $(CRTI) $(OBJS) -lc $(CRTN) -lgcc
 
-lebinit.bin: $(LEBINIT_OBJS) $(CRT1) $(CRTI) $(CRTN) $(LIBC_A)
+$(BINDIR)/lebinit.bin: $(LEBINIT_OBJS) $(CRT1) $(CRTI) $(CRTN) $(LIBC_A)
+	$(Q)mkdir -p $(BINDIR)
 	$(MSG_LD)$(CC) -nostdlib -static -Wl,-z,noexecstack -Wl,--gc-sections -T $(LD_SCRIPT) -L$(SYSROOT)/usr/lib -o $@ $(CRT1) $(CRTI) $(LEBINIT_OBJS) -lc $(CRTN) -lgcc
 
 stage: all
 	$(Q)mkdir -p $(SYSROOT_SBIN)
-	$(Q)cp init.bin $(SYSROOT_ROOT)/init
+	$(Q)cp $(BINDIR)/init.bin $(SYSROOT_ROOT)/init
 	$(MSG_STRIP)$(STRIP) -s $(SYSROOT_ROOT)/init
-	$(Q)cp lebinit.bin $(SYSROOT_SBIN)/lebinit
+	$(Q)cp $(BINDIR)/lebinit.bin $(SYSROOT_SBIN)/lebinit
 	$(MSG_STRIP)$(STRIP) -s $(SYSROOT_SBIN)/lebinit
 
 clean:
-	rm -f $(OBJS) $(LEBINIT_OBJS) init.bin lebinit.bin
+	rm -rf build $(BINDIR)
