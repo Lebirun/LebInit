@@ -1,0 +1,1 @@
+Same as Lebirun. Refer to Lebirun's CONTRIBUTING.md.
