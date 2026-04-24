@@ -1,0 +1,8 @@
+#ifndef LEBINIT_ABOUT_H
+#define LEBINIT_ABOUT_H
+
+#define LEBINIT_NAME    "lebinit"
+#define LEBINIT_VERSION "0.1.0"
+#define LEBINIT_BANNER  LEBINIT_NAME " " LEBINIT_VERSION
+
+#endif
