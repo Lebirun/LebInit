@@ -245,8 +245,8 @@ static int parse_lservice(const char *path, lservice_t *svc)
                     svc->restart = SVC_RESTART_NO;
             } else if (strcmp(key, "RestartDelay") == 0) {
                 svc->restart_delay = atoi(val);
-                if (svc->restart_delay < 1)
-                    svc->restart_delay = 1;
+                if (svc->restart_delay < 0)
+                    svc->restart_delay = 0;
             } else if (strcmp(key, "After") == 0) {
                 strncpy(svc->after, val, sizeof(svc->after) - 1);
             } else if (strcmp(key, "Before") == 0) {
@@ -568,7 +568,8 @@ int service_check_respawn(lservice_t *svcs, int count, int dead_pid)
                 svcs[i].instance_pids[j] = -1;
                 if (svcs[i].restart == SVC_RESTART_ALWAYS ||
                     svcs[i].restart == SVC_RESTART_ONFAIL) {
-                    sleep(svcs[i].restart_delay);
+                    if (svcs[i].restart_delay > 0)
+                        sleep(svcs[i].restart_delay);
                     if (j >= 10) {
                         num_str[0] = '0' + (j / 10);
                         num_str[1] = '0' + (j % 10);
@@ -605,7 +606,8 @@ int service_check_respawn(lservice_t *svcs, int count, int dead_pid)
             svcs[i].pid = -1;
             if (svcs[i].restart == SVC_RESTART_ALWAYS ||
                 svcs[i].restart == SVC_RESTART_ONFAIL) {
-                sleep(svcs[i].restart_delay);
+                if (svcs[i].restart_delay > 0)
+                    sleep(svcs[i].restart_delay);
                 service_start(&svcs[i]);
                 return 1;
             }
