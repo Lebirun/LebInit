@@ -3,8 +3,6 @@
 
 #define SHELL_PATH "/bin/lsh"
 #define GETTY_PATH "/sbin/getty"
-#define MAX_CONSOLES 12
-#define MAX_SERVICES 16
 #define SERVICES_DIR "/etc/lebinit/services"
 
 #define SVC_TYPE_ONESHOT  0
@@ -31,7 +29,8 @@ typedef struct {
     int restart;
     int restart_delay;
     int instances;
-    int instance_pids[MAX_CONSOLES];
+    int *instance_pids;
+    int instance_count;
     int pid;
     int loaded;
     int started;
@@ -44,7 +43,8 @@ int spawn_shell(void);
 int spawn_getty(int console_num);
 int get_num_consoles(void);
 
-int services_load(lservice_t *svcs, int max);
+int services_load(lservice_t **out_svcs);
+void services_free(lservice_t *svcs, int count);
 int service_start(lservice_t *svc);
 void service_stop(lservice_t *svc);
 void services_start_all(lservice_t *svcs, int count);

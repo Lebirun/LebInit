@@ -103,7 +103,7 @@ static void print_banner(void)
 
 int main(void)
 {
-    lservice_t services[MAX_SERVICES];
+    lservice_t *services;
     int num_svcs;
     int status;
     int wpid;
@@ -127,7 +127,8 @@ restart:
     g_reboot = 0;
     g_soft_reboot = 0;
 
-    num_svcs = services_load(services, MAX_SERVICES);
+    services = (lservice_t *)0;
+    num_svcs = services_load(&services);
     if (num_svcs > 0) {
         log_info("Starting services...");
         services_start_all(services, num_svcs);
@@ -136,15 +137,18 @@ restart:
     for (;;) {
         if (g_shutdown) {
             services_stop_all(services, num_svcs);
+            services_free(services, num_svcs);
             do_shutdown();
         }
         if (g_reboot) {
             services_stop_all(services, num_svcs);
+            services_free(services, num_svcs);
             do_reboot();
         }
         if (g_soft_reboot) {
             log_info("Soft-reboot: restarting userspace...");
             services_stop_all(services, num_svcs);
+            services_free(services, num_svcs);
             kill_all_children();
             log_ok("Userspace stopped, restarting init");
             argv[0] = "/init";
