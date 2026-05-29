@@ -11,6 +11,8 @@
 #include "service.h"
 #include "log.h"
 
+#define AUTH_WARM_TRIES 5
+
 int spawn_shell(void)
 {
     int pid;
@@ -33,6 +35,48 @@ int spawn_shell(void)
         _exit(127);
     }
     return pid;
+}
+
+static int warm_auth_file(const char *path)
+{
+    int fd;
+    char buf[512];
+    int n;
+    int total;
+
+    fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return -1;
+
+    total = 0;
+    for (;;) {
+        n = read(fd, buf, sizeof(buf));
+        if (n < 0) {
+            close(fd);
+            return -1;
+        }
+        if (n == 0)
+            break;
+        total += n;
+    }
+    close(fd);
+
+    if (total > 0)
+        return 0;
+    return -1;
+}
+
+static int warm_auth_files(void)
+{
+    int i;
+
+    for (i = 0; i < AUTH_WARM_TRIES; i++) {
+        if (warm_auth_file("/etc/passwd") == 0 &&
+            warm_auth_file("/etc/shadow") == 0)
+            return 0;
+        sleep(1);
+    }
+    return -1;
 }
 
 int spawn_getty(int console_num)
@@ -80,23 +124,26 @@ int get_num_consoles(void)
     int cur;
     int probe;
 
+    val = 2;
+
     fd = open("/proc/cmdline", O_RDONLY);
     if (fd < 0)
-        return 4;
+        goto probe_consoles;
     n = read(fd, buf, sizeof(buf) - 1);
     close(fd);
     if (n <= 0)
-        return 4;
+        goto probe_consoles;
     buf[n] = '\0';
 
     p = strstr(buf, "consoles=");
-    if (!p)
-        return 4;
-    p += 9;
-    val = atoi(p);
-    if (val < 1)
-        val = 1;
+    if (p) {
+        p += 9;
+        val = atoi(p);
+        if (val < 1)
+            val = 1;
+    }
 
+probe_consoles:
     cur = console_getcur();
     for (probe = val - 1; probe >= 0; probe--) {
         if (console_switch(probe) == 0) {
@@ -378,6 +425,8 @@ int service_start(lservice_t *svc)
         return -1;
 
     if (svc->instances == SVC_INSTANCES_AUTO) {
+        if (strcmp(svc->exec_start, GETTY_PATH) == 0)
+            warm_auth_files();
         num_cons = svc->instance_count;
         for (i = 0; i < num_cons; i++) {
             if (i >= 10) {
@@ -603,15 +652,8 @@ void services_start_all(lservice_t *svcs, int count)
             log_info(msg);
         }
 
-        if (svcs[idx].instances == SVC_INSTANCES_AUTO && !svcs[idx].silent) {
-            if (svcs[idx].ok_msg[0] != '\0')
-                log_ok(svcs[idx].ok_msg);
-            else
-                log_ok(svcs[idx].name);
-        }
-
         if (service_start(&svcs[idx]) >= 0) {
-            if (!svcs[idx].silent && svcs[idx].instances != SVC_INSTANCES_AUTO) {
+            if (!svcs[idx].silent) {
                 if (svcs[idx].ok_msg[0] != '\0')
                     log_ok(svcs[idx].ok_msg);
                 else
