@@ -121,18 +121,16 @@ int get_num_consoles(void)
     int n;
     char *p;
     int val;
-    int cur;
-    int probe;
 
     val = 2;
 
     fd = open("/proc/cmdline", O_RDONLY);
     if (fd < 0)
-        goto probe_consoles;
+        return val;
     n = read(fd, buf, sizeof(buf) - 1);
     close(fd);
     if (n <= 0)
-        goto probe_consoles;
+        return val;
     buf[n] = '\0';
 
     p = strstr(buf, "consoles=");
@@ -142,19 +140,7 @@ int get_num_consoles(void)
         if (val < 1)
             val = 1;
     }
-
-probe_consoles:
-    cur = console_getcur();
-    for (probe = val - 1; probe >= 0; probe--) {
-        if (console_switch(probe) == 0) {
-            if (cur >= 0)
-                console_switch(cur);
-            return probe + 1;
-        }
-    }
-    if (cur >= 0)
-        console_switch(cur);
-    return 1;
+    return val;
 }
 
 static void service_clear(lservice_t *svc)
