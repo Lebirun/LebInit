@@ -342,11 +342,6 @@ int services_load(lservice_t **out_svcs)
     int cap;
     char path[256];
     int nlen;
-    int read_result;
-    int entries_seen;
-    int definitions_seen;
-    int parse_failures;
-    char diagnostic[96];
     lservice_t *svcs;
     lservice_t *new_svcs;
 
@@ -354,32 +349,22 @@ int services_load(lservice_t **out_svcs)
         return 0;
     *out_svcs = (lservice_t *)0;
     dirfd = vfs_open(SERVICES_DIR, 0);
-    if (dirfd < 0) {
-        snprintf(diagnostic, sizeof(diagnostic),
-                 "Unable to open service directory: error %d", dirfd);
-        log_warn(diagnostic);
+    if (dirfd < 0)
         return 0;
-    }
 
     count = 0;
     cap = 0;
     svcs = (lservice_t *)0;
     idx = 0;
-    entries_seen = 0;
-    definitions_seen = 0;
-    parse_failures = 0;
     for (;;) {
-        read_result = vfs_readdir(dirfd, name, &type, idx);
-        if (read_result < 0)
+        if (vfs_readdir(dirfd, name, &type, idx) < 0)
             break;
         idx++;
-        entries_seen++;
         if (type != 1)
             continue;
         nlen = strlen(name);
         if (nlen < 9 || strcmp(name + nlen - 9, ".lservice") != 0)
             continue;
-        definitions_seen++;
 
         snprintf(path, sizeof(path), "%s/%s", SERVICES_DIR, name);
         if (count == cap) {
@@ -392,18 +377,10 @@ int services_load(lservice_t **out_svcs)
         memset(&svcs[count], 0, sizeof(lservice_t));
         if (parse_lservice(path, &svcs[count]) == 0)
             count++;
-        else
-            parse_failures++;
     }
     vfs_close_fd(dirfd);
     *out_svcs = svcs;
     if (count == 0) {
-        if (entries_seen == 0)
-            log_warn("Service directory returned no entries");
-        else if (definitions_seen == 0)
-            log_warn("No service definitions found during enumeration");
-        else if (parse_failures > 0)
-            log_warn("Service definitions were found but could not be parsed");
         free(svcs);
         *out_svcs = (lservice_t *)0;
     }
