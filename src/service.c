@@ -6,12 +6,62 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <errno.h>
 #include <lebirun.h>
 #include <dirent.h>
 #include "service.h"
 #include "log.h"
 
 #define AUTH_WARM_TRIES 5
+
+static void service_exec_error(const char *path)
+{
+    char buf[192];
+    int error;
+    int len;
+
+    error = errno;
+    len = snprintf(buf, sizeof(buf), "LebInit: exec %s failed with errno %d\n",
+                   path, error);
+    if (len <= 0)
+        return;
+    if (len >= (int)sizeof(buf))
+        len = sizeof(buf) - 1;
+    write(2, buf, len);
+}
+
+static void service_console_error(int console_num)
+{
+    char buf[96];
+    int len;
+
+    len = snprintf(buf, sizeof(buf),
+                   "LebInit: console_setid(%d) failed\n", console_num);
+    if (len <= 0)
+        return;
+    if (len >= (int)sizeof(buf))
+        len = sizeof(buf) - 1;
+    write(2, buf, len);
+}
+
+static int service_exec_available(const char *path)
+{
+    unsigned char header[4];
+    int fd;
+    int size;
+
+    fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return -1;
+    size = read(fd, header, sizeof(header));
+    close(fd);
+    if (size != (int)sizeof(header))
+        return -1;
+    if (header[0] != 0x7F || header[1] != 'E' ||
+        header[2] != 'L' || header[3] != 'F')
+        return -1;
+    return 0;
+}
 
 int spawn_shell(void)
 {
@@ -32,6 +82,7 @@ int spawn_shell(void)
         argv[1] = (char *)0;
         envp[0] = (char *)0;
         execve(SHELL_PATH, argv, envp);
+        service_exec_error(SHELL_PATH);
         _exit(127);
     }
     return pid;
@@ -91,8 +142,10 @@ int spawn_getty(int console_num)
         return -1;
     if (pid == 0) {
         setsid();
-        if (console_setid(console_num) < 0)
+        if (console_setid(console_num) < 0) {
+            service_console_error(console_num);
             _exit(126);
+        }
         ioctl(0, TIOCSCTTY, 0);
         tcsetpgrp(0, getpid());
         if (console_num >= 10) {
@@ -109,6 +162,7 @@ int spawn_getty(int console_num)
         envp[0] = "TERM=linux";
         envp[1] = (char *)0;
         execve(GETTY_PATH, argv, envp);
+        service_exec_error(GETTY_PATH);
         _exit(127);
     }
     return pid;
@@ -398,7 +452,7 @@ void services_free(lservice_t *svcs, int count)
     free(svcs);
 }
 
-int service_start(lservice_t *svc)
+static int service_start_internal(lservice_t *svc)
 {
     int pid;
     char *argv[4];
@@ -406,14 +460,14 @@ int service_start(lservice_t *svc)
     int num_cons;
     int i;
     char num_str[4];
+    int started_count;
 
     if (!svc->loaded || svc->exec_start[0] == '\0')
         return -1;
 
     if (svc->instances == SVC_INSTANCES_AUTO) {
-        if (strcmp(svc->exec_start, GETTY_PATH) == 0)
-            warm_auth_files();
         num_cons = svc->instance_count;
+        started_count = 0;
         for (i = 0; i < num_cons; i++) {
             if (i >= 10) {
                 num_str[0] = '0' + (i / 10);
@@ -431,8 +485,10 @@ int service_start(lservice_t *svc)
             }
             if (pid == 0) {
                 setsid();
-                if (console_setid(i) < 0)
+                if (console_setid(i) < 0) {
+                    service_console_error(i);
                     _exit(126);
+                }
                 ioctl(0, TIOCSCTTY, 0);
                 tcsetpgrp(0, getpid());
                 argv[0] = svc->exec_start;
@@ -441,10 +497,14 @@ int service_start(lservice_t *svc)
                 envp[0] = "TERM=linux";
                 envp[1] = (char *)0;
                 execve(svc->exec_start, argv, envp);
+                service_exec_error(svc->exec_start);
                 _exit(127);
             }
             svc->instance_pids[i] = pid;
+            started_count++;
         }
+        if (started_count == 0)
+            return -1;
         svc->started = 1;
         return 0;
     }
@@ -456,8 +516,10 @@ int service_start(lservice_t *svc)
     if (pid == 0) {
         setsid();
         if (svc->console >= 0) {
-            if (console_setid(svc->console) < 0)
+            if (console_setid(svc->console) < 0) {
+                service_console_error(svc->console);
                 _exit(126);
+            }
             ioctl(0, TIOCSCTTY, 0);
             tcsetpgrp(0, getpid());
         }
@@ -468,6 +530,7 @@ int service_start(lservice_t *svc)
         envp[0] = "TERM=linux";
         envp[1] = (char *)0;
         execve("/bin/sh", argv, envp);
+        service_exec_error("/bin/sh");
         _exit(127);
     }
 
@@ -481,6 +544,11 @@ int service_start(lservice_t *svc)
     }
 
     return pid;
+}
+
+int service_start(lservice_t *svc)
+{
+    return service_start_internal(svc);
 }
 
 void service_stop(lservice_t *svc)
@@ -513,6 +581,7 @@ void service_stop(lservice_t *svc)
                 argv[3] = (char *)0;
                 envp[0] = (char *)0;
                 execve("/bin/sh", argv, envp);
+                service_exec_error("/bin/sh");
                 _exit(127);
             }
             if (pid > 0)
@@ -638,7 +707,27 @@ void services_start_all(lservice_t *svcs, int count)
             log_info(msg);
         }
 
-        if (service_start(&svcs[idx]) >= 0) {
+        if (svcs[idx].instances == SVC_INSTANCES_AUTO &&
+            strcmp(svcs[idx].exec_start, GETTY_PATH) == 0) {
+            warm_auth_files();
+            if (service_exec_available(svcs[idx].exec_start) < 0) {
+                if (!svcs[idx].silent)
+                    log_fail(svcs[idx].exec_start);
+                continue;
+            }
+            if (!svcs[idx].silent) {
+                if (svcs[idx].ok_msg[0] != '\0')
+                    log_ok(svcs[idx].ok_msg);
+                else
+                    log_ok(svcs[idx].name);
+            }
+            if (service_start_internal(&svcs[idx]) < 0 &&
+                !svcs[idx].silent)
+                log_fail(svcs[idx].name);
+            continue;
+        }
+
+        if (service_start_internal(&svcs[idx]) >= 0) {
             if (!svcs[idx].silent) {
                 if (svcs[idx].ok_msg[0] != '\0')
                     log_ok(svcs[idx].ok_msg);
@@ -695,8 +784,10 @@ int service_check_respawn(lservice_t *svcs, int count, int dead_pid)
                         return 0;
                     if (pid == 0) {
                         setsid();
-                        if (console_setid(j) < 0)
+                        if (console_setid(j) < 0) {
+                            service_console_error(j);
                             _exit(126);
+                        }
                         ioctl(0, TIOCSCTTY, 0);
                         tcsetpgrp(0, getpid());
                         argv[0] = svcs[i].exec_start;
@@ -705,6 +796,7 @@ int service_check_respawn(lservice_t *svcs, int count, int dead_pid)
                         envp[0] = "TERM=linux";
                         envp[1] = (char *)0;
                         execve(svcs[i].exec_start, argv, envp);
+                        service_exec_error(svcs[i].exec_start);
                         _exit(127);
                     }
                     svcs[i].instance_pids[j] = pid;
