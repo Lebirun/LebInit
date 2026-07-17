@@ -2,6 +2,7 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <lebirun.h>
+#include <lebirun/syscall.h>
 #include <fcntl.h>
 #include <string.h>
 #include "log.h"
