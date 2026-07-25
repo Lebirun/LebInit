@@ -502,6 +502,7 @@ static int service_start_internal(lservice_t *svc)
     int num_cons;
     int i;
     int started_count;
+    int active_console;
 
     if (!svc->loaded || svc->exec_start[0] == '\0')
         return -1;
@@ -510,9 +511,17 @@ static int service_start_internal(lservice_t *svc)
         num_cons = svc->instance_count;
         started_count = 0;
         svc->started = 1;
-        for (i = 0; i < num_cons; i++) {
-            if (service_spawn_instance(svc, i) > 0)
+        if (strcmp(svc->exec_start, GETTY_PATH) == 0) {
+            active_console = console_getcur();
+            if (active_console < 0 || active_console >= num_cons)
+                active_console = 0;
+            if (service_spawn_instance(svc, active_console) > 0)
                 started_count++;
+        } else {
+            for (i = 0; i < num_cons; i++) {
+                if (service_spawn_instance(svc, i) > 0)
+                    started_count++;
+            }
         }
         if (started_count == 0)
             return -1;
@@ -804,7 +813,9 @@ void services_ensure_instances(lservice_t *svcs, int count)
 {
     int i;
     int j;
+    int active_console;
 
+    active_console = console_getcur();
     for (i = 0; i < count; i++) {
         if (!svcs[i].started ||
             svcs[i].instances != SVC_INSTANCES_AUTO)
@@ -812,9 +823,17 @@ void services_ensure_instances(lservice_t *svcs, int count)
         if (svcs[i].restart != SVC_RESTART_ALWAYS &&
             svcs[i].restart != SVC_RESTART_ONFAIL)
             continue;
-        for (j = 0; j < svcs[i].instance_count; j++) {
-            if (svcs[i].instance_pids[j] <= 0)
-                service_spawn_instance(&svcs[i], j);
+        if (strcmp(svcs[i].exec_start, GETTY_PATH) == 0) {
+            if (active_console < 0 ||
+                active_console >= svcs[i].instance_count)
+                continue;
+            if (svcs[i].instance_pids[active_console] <= 0)
+                service_spawn_instance(&svcs[i], active_console);
+        } else {
+            for (j = 0; j < svcs[i].instance_count; j++) {
+                if (svcs[i].instance_pids[j] <= 0)
+                    service_spawn_instance(&svcs[i], j);
+            }
         }
     }
 }
