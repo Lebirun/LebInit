@@ -166,6 +166,7 @@ restart:
         } else {
             sleep(1);
         }
+        services_ensure_instances(services, num_svcs);
     }
 
     return 0;

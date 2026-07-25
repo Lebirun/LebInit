@@ -219,6 +219,48 @@ static int service_alloc_instances(lservice_t *svc, int count)
     return 0;
 }
 
+static int service_spawn_instance(lservice_t *svc, int instance)
+{
+    int pid;
+    char num_str[4];
+    char *argv[3];
+    char *envp[2];
+
+    if (instance >= 10) {
+        num_str[0] = '0' + (instance / 10);
+        num_str[1] = '0' + (instance % 10);
+        num_str[2] = '\0';
+    } else {
+        num_str[0] = '0' + instance;
+        num_str[1] = '\0';
+    }
+
+    pid = fork();
+    if (pid < 0) {
+        svc->instance_pids[instance] = -1;
+        return -1;
+    }
+    if (pid == 0) {
+        setsid();
+        if (console_setid(instance) < 0) {
+            service_console_error(instance);
+            _exit(126);
+        }
+        ioctl(0, TIOCSCTTY, 0);
+        tcsetpgrp(0, getpid());
+        argv[0] = svc->exec_start;
+        argv[1] = num_str;
+        argv[2] = (char *)0;
+        envp[0] = "TERM=linux";
+        envp[1] = (char *)0;
+        execve(svc->exec_start, argv, envp);
+        service_exec_error(svc->exec_start);
+        _exit(127);
+    }
+    svc->instance_pids[instance] = pid;
+    return pid;
+}
+
 static void strip_trailing(char *s)
 {
     int len;
@@ -459,7 +501,6 @@ static int service_start_internal(lservice_t *svc)
     char *envp[2];
     int num_cons;
     int i;
-    char num_str[4];
     int started_count;
 
     if (!svc->loaded || svc->exec_start[0] == '\0')
@@ -468,44 +509,13 @@ static int service_start_internal(lservice_t *svc)
     if (svc->instances == SVC_INSTANCES_AUTO) {
         num_cons = svc->instance_count;
         started_count = 0;
+        svc->started = 1;
         for (i = 0; i < num_cons; i++) {
-            if (i >= 10) {
-                num_str[0] = '0' + (i / 10);
-                num_str[1] = '0' + (i % 10);
-                num_str[2] = '\0';
-            } else {
-                num_str[0] = '0' + i;
-                num_str[1] = '\0';
-            }
-
-            pid = fork();
-            if (pid < 0) {
-                svc->instance_pids[i] = -1;
-                continue;
-            }
-            if (pid == 0) {
-                setsid();
-                if (console_setid(i) < 0) {
-                    service_console_error(i);
-                    _exit(126);
-                }
-                ioctl(0, TIOCSCTTY, 0);
-                tcsetpgrp(0, getpid());
-                argv[0] = svc->exec_start;
-                argv[1] = num_str;
-                argv[2] = (char *)0;
-                envp[0] = "TERM=linux";
-                envp[1] = (char *)0;
-                execve(svc->exec_start, argv, envp);
-                service_exec_error(svc->exec_start);
-                _exit(127);
-            }
-            svc->instance_pids[i] = pid;
-            started_count++;
+            if (service_spawn_instance(svc, i) > 0)
+                started_count++;
         }
         if (started_count == 0)
             return -1;
-        svc->started = 1;
         return 0;
     }
 
@@ -756,10 +766,6 @@ int service_check_respawn(lservice_t *svcs, int count, int dead_pid)
 {
     int i;
     int j;
-    int pid;
-    char num_str[4];
-    char *argv[3];
-    char *envp[2];
 
     for (i = 0; i < count; i++) {
         if (svcs[i].instances == SVC_INSTANCES_AUTO) {
@@ -771,35 +777,8 @@ int service_check_respawn(lservice_t *svcs, int count, int dead_pid)
                     svcs[i].restart == SVC_RESTART_ONFAIL) {
                     if (svcs[i].restart_delay > 0)
                         sleep(svcs[i].restart_delay);
-                    if (j >= 10) {
-                        num_str[0] = '0' + (j / 10);
-                        num_str[1] = '0' + (j % 10);
-                        num_str[2] = '\0';
-                    } else {
-                        num_str[0] = '0' + j;
-                        num_str[1] = '\0';
-                    }
-                    pid = fork();
-                    if (pid < 0)
+                    if (service_spawn_instance(&svcs[i], j) < 0)
                         return 0;
-                    if (pid == 0) {
-                        setsid();
-                        if (console_setid(j) < 0) {
-                            service_console_error(j);
-                            _exit(126);
-                        }
-                        ioctl(0, TIOCSCTTY, 0);
-                        tcsetpgrp(0, getpid());
-                        argv[0] = svcs[i].exec_start;
-                        argv[1] = num_str;
-                        argv[2] = (char *)0;
-                        envp[0] = "TERM=linux";
-                        envp[1] = (char *)0;
-                        execve(svcs[i].exec_start, argv, envp);
-                        service_exec_error(svcs[i].exec_start);
-                        _exit(127);
-                    }
-                    svcs[i].instance_pids[j] = pid;
                     return 1;
                 }
                 return 0;
@@ -819,4 +798,23 @@ int service_check_respawn(lservice_t *svcs, int count, int dead_pid)
         }
     }
     return 0;
+}
+
+void services_ensure_instances(lservice_t *svcs, int count)
+{
+    int i;
+    int j;
+
+    for (i = 0; i < count; i++) {
+        if (!svcs[i].started ||
+            svcs[i].instances != SVC_INSTANCES_AUTO)
+            continue;
+        if (svcs[i].restart != SVC_RESTART_ALWAYS &&
+            svcs[i].restart != SVC_RESTART_ONFAIL)
+            continue;
+        for (j = 0; j < svcs[i].instance_count; j++) {
+            if (svcs[i].instance_pids[j] <= 0)
+                service_spawn_instance(&svcs[i], j);
+        }
+    }
 }

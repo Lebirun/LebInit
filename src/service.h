@@ -50,5 +50,6 @@ void service_stop(lservice_t *svc);
 void services_start_all(lservice_t *svcs, int count);
 void services_stop_all(lservice_t *svcs, int count);
 int service_check_respawn(lservice_t *svcs, int count, int dead_pid);
+void services_ensure_instances(lservice_t *svcs, int count);
 
 #endif
