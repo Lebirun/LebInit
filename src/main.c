@@ -102,7 +102,7 @@ static void print_banner(void)
     WRITE_LIT(1, COLOR_WHITE " Lebirun Init System" COLOR_RESET "\n\n");
 }
 
-int main(void)
+int __attribute__((section(".text.hot.user"))) main(void)
 {
     lservice_t *services;
     int num_svcs;

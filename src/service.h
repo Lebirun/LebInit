@@ -17,19 +17,20 @@
 #define SVC_INSTANCES_AUTO  1
 
 typedef struct {
-    char name[32];
-    char description[64];
-    char exec_start[128];
-    char exec_stop[64];
-    char after[64];
-    char before[64];
-    char start_msg[64];
-    char ok_msg[64];
+    char *name;
+    char *description;
+    char *exec_start;
+    char *exec_stop;
+    char *after;
+    char *before;
+    char *start_msg;
+    char *ok_msg;
     int type;
     int restart;
     int restart_delay;
     int instances;
     int *instance_pids;
+    int *start_order;
     int instance_count;
     int pid;
     int loaded;
@@ -39,8 +40,6 @@ typedef struct {
     int console;
 } lservice_t;
 
-int spawn_shell(void);
-int spawn_getty(int console_num);
 int get_num_consoles(void);
 
 int services_load(lservice_t **out_svcs);

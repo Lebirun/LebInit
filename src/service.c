@@ -1,6 +1,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <signal.h>
 #include <string.h>
 #include <stdlib.h>
@@ -13,6 +14,36 @@
 #include "log.h"
 
 #define AUTH_WARM_TRIES 5
+
+typedef struct {
+    size_t mapping_size;
+} service_storage_t;
+
+static int size_add_checked(size_t left, size_t right, size_t *result)
+{
+    if (right > (size_t)-1 - left)
+        return -1;
+    *result = left + right;
+    return 0;
+}
+
+static int size_mul_checked(size_t left, size_t right, size_t *result)
+{
+    if (left && right > (size_t)-1 / left)
+        return -1;
+    *result = left * right;
+    return 0;
+}
+
+static void service_storage_release(lservice_t *svcs)
+{
+    service_storage_t *storage;
+
+    if (!svcs)
+        return;
+    storage = (service_storage_t *)(void *)svcs - 1;
+    munmap(storage, storage->mapping_size);
+}
 
 static void service_exec_error(const char *path)
 {
@@ -63,31 +94,6 @@ static int service_exec_available(const char *path)
     return 0;
 }
 
-int spawn_shell(void)
-{
-    int pid;
-    char *argv[2];
-    char *envp[1];
-
-    pid = fork();
-    if (pid < 0)
-        return -1;
-    if (pid == 0) {
-        setsid();
-        if (console_setid(1) < 0)
-            console_setid(0);
-        ioctl(0, TIOCSCTTY, 0);
-        tcsetpgrp(0, getpid());
-        argv[0] = SHELL_PATH;
-        argv[1] = (char *)0;
-        envp[0] = (char *)0;
-        execve(SHELL_PATH, argv, envp);
-        service_exec_error(SHELL_PATH);
-        _exit(127);
-    }
-    return pid;
-}
-
 static int warm_auth_file(const char *path)
 {
     int fd;
@@ -130,44 +136,6 @@ static int warm_auth_files(void)
     return -1;
 }
 
-int spawn_getty(int console_num)
-{
-    int pid;
-    char *argv[3];
-    char *envp[2];
-    char num_str[4];
-
-    pid = fork();
-    if (pid < 0)
-        return -1;
-    if (pid == 0) {
-        setsid();
-        if (console_setid(console_num) < 0) {
-            service_console_error(console_num);
-            _exit(126);
-        }
-        ioctl(0, TIOCSCTTY, 0);
-        tcsetpgrp(0, getpid());
-        if (console_num >= 10) {
-            num_str[0] = '0' + (console_num / 10);
-            num_str[1] = '0' + (console_num % 10);
-            num_str[2] = '\0';
-        } else {
-            num_str[0] = '0' + console_num;
-            num_str[1] = '\0';
-        }
-        argv[0] = GETTY_PATH;
-        argv[1] = num_str;
-        argv[2] = (char *)0;
-        envp[0] = "TERM=linux";
-        envp[1] = (char *)0;
-        execve(GETTY_PATH, argv, envp);
-        service_exec_error(GETTY_PATH);
-        _exit(127);
-    }
-    return pid;
-}
-
 int get_num_consoles(void)
 {
     int fd;
@@ -201,18 +169,17 @@ static void service_clear(lservice_t *svc)
 {
     if (!svc)
         return;
-    if (svc->instance_pids)
-        free(svc->instance_pids);
     memset(svc, 0, sizeof(*svc));
 }
 
-static int service_alloc_instances(lservice_t *svc, int count)
+static int service_alloc_instances(lservice_t *svc, int count,
+                                   int *instance_pids)
 {
     int i;
 
-    svc->instance_pids = (int *)malloc(sizeof(int) * count);
-    if (!svc->instance_pids)
+    if (!instance_pids || count < 1)
         return -1;
+    svc->instance_pids = instance_pids;
     svc->instance_count = count;
     for (i = 0; i < count; i++)
         svc->instance_pids[i] = -1;
@@ -241,13 +208,15 @@ static int service_spawn_instance(lservice_t *svc, int instance)
         return -1;
     }
     if (pid == 0) {
-        setsid();
-        if (console_setid(instance) < 0) {
-            service_console_error(instance);
-            _exit(126);
+        if (strcmp(svc->exec_start, GETTY_PATH) != 0) {
+            setsid();
+            if (console_setid(instance) < 0) {
+                service_console_error(instance);
+                _exit(126);
+            }
+            ioctl(0, TIOCSCTTY, 0);
+            tcsetpgrp(0, getpid());
         }
-        ioctl(0, TIOCSCTTY, 0);
-        tcsetpgrp(0, getpid());
         argv[0] = svc->exec_start;
         argv[1] = num_str;
         argv[2] = (char *)0;
@@ -271,41 +240,51 @@ static void strip_trailing(char *s)
         s[--len] = '\0';
 }
 
-static const char *skip_space(const char *p)
+static char *skip_space(char *p)
 {
     while (*p == ' ' || *p == '\t')
         p++;
     return p;
 }
 
-static int parse_lservice(const char *path, lservice_t *svc)
+static int parse_lservice(const char *path, lservice_t *svc,
+                          char *config_data, size_t config_capacity,
+                          int *instance_pids,
+                          int console_count)
 {
     int fd;
-    char buf[1024];
-    int n;
+    ssize_t n;
     char *line;
     char *next;
     char *eq;
-    const char *key;
-    const char *val;
+    char *key;
+    char *val;
     int in_about;
     int in_exec;
     int in_health;
-    int consoles;
 
     fd = open(path, O_RDONLY);
     if (fd < 0)
         return -1;
-    n = read(fd, buf, sizeof(buf) - 1);
+    if (config_capacity < 2) {
+        close(fd);
+        return -1;
+    }
+    n = read(fd, config_data, config_capacity - 1);
     close(fd);
     if (n <= 0)
         return -1;
-    buf[n] = '\0';
+    config_data[n] = '\0';
 
     memset(svc, 0, sizeof(*svc));
-    consoles = get_num_consoles();
-    if (service_alloc_instances(svc, consoles) < 0)
-        return -1;
+    svc->name = "";
+    svc->description = "";
+    svc->exec_start = "";
+    svc->exec_stop = "";
+    svc->after = "";
+    svc->before = "";
+    svc->start_msg = "";
+    svc->ok_msg = "";
     svc->type = SVC_TYPE_DAEMON;
     svc->restart = SVC_RESTART_NO;
     svc->restart_delay = 3;
@@ -318,7 +297,7 @@ static int parse_lservice(const char *path, lservice_t *svc)
     in_exec = 0;
     in_health = 0;
 
-    line = buf;
+    line = config_data;
     while (line && *line) {
         next = strchr(line, '\n');
         if (next) {
@@ -369,20 +348,20 @@ static int parse_lservice(const char *path, lservice_t *svc)
 
         if (in_about) {
             if (strcmp(key, "Name") == 0)
-                strncpy(svc->name, val, sizeof(svc->name) - 1);
+                svc->name = val;
             else if (strcmp(key, "Description") == 0)
-                strncpy(svc->description, val, sizeof(svc->description) - 1);
+                svc->description = val;
             else if (strcmp(key, "StartMsg") == 0)
-                strncpy(svc->start_msg, val, sizeof(svc->start_msg) - 1);
+                svc->start_msg = val;
             else if (strcmp(key, "OkMsg") == 0)
-                strncpy(svc->ok_msg, val, sizeof(svc->ok_msg) - 1);
+                svc->ok_msg = val;
             else if (strcmp(key, "Silent") == 0)
                 svc->silent = (strcmp(val, "yes") == 0 || strcmp(val, "1") == 0);
         } else if (in_exec) {
             if (strcmp(key, "Start") == 0)
-                strncpy(svc->exec_start, val, sizeof(svc->exec_start) - 1);
+                svc->exec_start = val;
             else if (strcmp(key, "Stop") == 0)
-                strncpy(svc->exec_stop, val, sizeof(svc->exec_stop) - 1);
+                svc->exec_stop = val;
             else if (strcmp(key, "Type") == 0) {
                 if (strcmp(val, "oneshot") == 0)
                     svc->type = SVC_TYPE_ONESHOT;
@@ -410,9 +389,9 @@ static int parse_lservice(const char *path, lservice_t *svc)
                 if (svc->restart_delay < 0)
                     svc->restart_delay = 0;
             } else if (strcmp(key, "After") == 0) {
-                strncpy(svc->after, val, sizeof(svc->after) - 1);
+                svc->after = val;
             } else if (strcmp(key, "Before") == 0) {
-                strncpy(svc->before, val, sizeof(svc->before) - 1);
+                svc->before = val;
             }
         }
 
@@ -424,8 +403,84 @@ static int parse_lservice(const char *path, lservice_t *svc)
         return -1;
     }
 
+    if (svc->instances == SVC_INSTANCES_AUTO &&
+        service_alloc_instances(svc, console_count, instance_pids) < 0) {
+        service_clear(svc);
+        return -1;
+    }
+
     svc->loaded = 1;
     return 0;
+}
+
+static int service_filename_valid(const char *name, unsigned int type)
+{
+    int nlen;
+
+    if (type != 1)
+        return 0;
+    nlen = strlen(name);
+    if (nlen < 9)
+        return 0;
+    return strcmp(name + nlen - 9, ".lservice") == 0;
+}
+
+static size_t service_config_capacity(const char *path)
+{
+    char buffer[256];
+    int fd;
+    ssize_t size;
+    size_t total;
+
+    fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return 1;
+    total = 1;
+    for (;;) {
+        size = read(fd, buffer, sizeof(buffer));
+        if (size <= 0)
+            break;
+        if ((size_t)size > (size_t)-1 - total) {
+            close(fd);
+            return 0;
+        }
+        total += (size_t)size;
+    }
+    close(fd);
+    return total;
+}
+
+static int services_measure(size_t *config_size)
+{
+    int dirfd;
+    char name[64];
+    char path[256];
+    unsigned int type;
+    unsigned int idx;
+    int count;
+    size_t capacity;
+
+    *config_size = 0;
+    dirfd = vfs_open(SERVICES_DIR, 0);
+    if (dirfd < 0)
+        return 0;
+    idx = 0;
+    count = 0;
+    while (vfs_readdir(dirfd, name, &type, idx) >= 0) {
+        idx++;
+        if (service_filename_valid(name, type)) {
+            snprintf(path, sizeof(path), "%s/%s", SERVICES_DIR, name);
+            capacity = service_config_capacity(path);
+            if (capacity > (size_t)-1 - *config_size) {
+                vfs_close_fd(dirfd);
+                return 0;
+            }
+            *config_size += capacity;
+            count++;
+        }
+    }
+    vfs_close_fd(dirfd);
+    return count;
 }
 
 int services_load(lservice_t **out_svcs)
@@ -435,63 +490,110 @@ int services_load(lservice_t **out_svcs)
     unsigned int type;
     unsigned int idx;
     int count;
-    int cap;
+    int capacity;
+    int console_count;
     char path[256];
-    int nlen;
     lservice_t *svcs;
-    lservice_t *new_svcs;
+    char *config_storage;
+    int *instance_storage;
+    size_t records_size;
+    size_t config_size;
+    size_t config_offset;
+    size_t config_capacity;
+    size_t config_aligned_size;
+    size_t instances_size;
+    size_t workspace_size;
+    size_t allocation_size;
+    size_t mapping_size;
+    int *workspace;
+    service_storage_t *storage;
 
     if (!out_svcs)
         return 0;
     *out_svcs = (lservice_t *)0;
+    capacity = services_measure(&config_size);
+    if (capacity <= 0)
+        return 0;
+    console_count = get_num_consoles();
+    if (size_mul_checked((size_t)capacity, sizeof(lservice_t),
+                         &records_size) < 0)
+        return 0;
+    if (size_add_checked(config_size, sizeof(int) - 1,
+                         &config_aligned_size) < 0)
+        return 0;
+    config_aligned_size &= ~(sizeof(int) - 1);
+    if (size_mul_checked((size_t)capacity, (size_t)console_count,
+                         &instances_size) < 0 ||
+        size_mul_checked(instances_size, sizeof(int), &instances_size) < 0 ||
+        size_mul_checked((size_t)capacity, sizeof(int), &workspace_size) < 0)
+        return 0;
+    allocation_size = sizeof(service_storage_t);
+    if (size_add_checked(allocation_size, records_size, &allocation_size) < 0 ||
+        size_add_checked(allocation_size, config_aligned_size,
+                         &allocation_size) < 0 ||
+        size_add_checked(allocation_size, instances_size,
+                         &allocation_size) < 0 ||
+        size_add_checked(allocation_size, workspace_size,
+                         &allocation_size) < 0 ||
+        size_add_checked(allocation_size, 4095, &mapping_size) < 0)
+        return 0;
+    mapping_size &= ~(size_t)4095;
+    storage = mmap((void *)0, mapping_size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (storage == MAP_FAILED)
+        return 0;
+    storage->mapping_size = mapping_size;
+    svcs = (lservice_t *)(void *)(storage + 1);
+    config_storage = (char *)svcs + records_size;
+    instance_storage = (int *)(void *)(config_storage + config_aligned_size);
+    workspace = (int *)(void *)((char *)instance_storage + instances_size);
     dirfd = vfs_open(SERVICES_DIR, 0);
     if (dirfd < 0)
-        return 0;
+        goto fail;
 
     count = 0;
-    cap = 0;
-    svcs = (lservice_t *)0;
+    config_offset = 0;
     idx = 0;
     for (;;) {
         if (vfs_readdir(dirfd, name, &type, idx) < 0)
             break;
         idx++;
-        if (type != 1)
-            continue;
-        nlen = strlen(name);
-        if (nlen < 9 || strcmp(name + nlen - 9, ".lservice") != 0)
+        if (!service_filename_valid(name, type))
             continue;
 
         snprintf(path, sizeof(path), "%s/%s", SERVICES_DIR, name);
-        if (count == cap) {
-            cap = cap ? cap * 2 : 8;
-            new_svcs = (lservice_t *)realloc(svcs, sizeof(lservice_t) * cap);
-            if (!new_svcs)
-                break;
-            svcs = new_svcs;
-        }
-        memset(&svcs[count], 0, sizeof(lservice_t));
-        if (parse_lservice(path, &svcs[count]) == 0)
+        if (count >= capacity)
+            break;
+        config_capacity = service_config_capacity(path);
+        if (config_capacity > config_size - config_offset)
+            config_capacity = config_size - config_offset;
+        if (parse_lservice(path, &svcs[count],
+                           config_storage + config_offset, config_capacity,
+                           instance_storage + (size_t)count *
+                           (size_t)console_count, console_count) == 0)
             count++;
+        config_offset += config_capacity;
     }
     vfs_close_fd(dirfd);
+    if (count > 0) {
+        svcs[0].start_order = workspace;
+    }
     *out_svcs = svcs;
     if (count == 0) {
-        free(svcs);
+        service_storage_release(svcs);
         *out_svcs = (lservice_t *)0;
     }
     return count;
+
+fail:
+    service_storage_release(svcs);
+    return 0;
 }
 
 void services_free(lservice_t *svcs, int count)
 {
-    int i;
-
-    if (!svcs)
-        return;
-    for (i = 0; i < count; i++)
-        service_clear(&svcs[i]);
-    free(svcs);
+    (void)count;
+    service_storage_release(svcs);
 }
 
 static int service_start_internal(lservice_t *svc)
@@ -623,36 +725,48 @@ static int svc_find_by_name(lservice_t *svcs, int count, const char *name)
     return -1;
 }
 
+static int svc_order_contains(int *order, int count, int service)
+{
+    int i;
+
+    for (i = 0; i < count; i++) {
+        if (order[i] == service)
+            return 1;
+    }
+    return 0;
+}
+
 static int svc_sort(lservice_t *svcs, int count, int *order)
 {
-    int *placed;
     int out;
     int i;
     int dep;
     int changed;
     int pass;
+    int my_pos;
+    int dep_pos;
+    int j;
+    int tmp;
 
-    placed = (int *)malloc(sizeof(int) * count);
-    if (!placed)
+    if (!order)
         return -1;
 
     for (i = 0; i < count; i++)
-        placed[i] = 0;
+        order[i] = -1;
     out = 0;
 
     for (pass = 0; pass < count; pass++) {
         changed = 0;
         for (i = 0; i < count; i++) {
-            if (placed[i])
+            if (svc_order_contains(order, out, i))
                 continue;
 
             if (svcs[i].after[0] != '\0') {
                 dep = svc_find_by_name(svcs, count, svcs[i].after);
-                if (dep >= 0 && !placed[dep])
+                if (dep >= 0 && !svc_order_contains(order, out, dep))
                     continue;
             }
 
-            placed[i] = 1;
             order[out++] = i;
             changed = 1;
         }
@@ -661,7 +775,7 @@ static int svc_sort(lservice_t *svcs, int count, int *order)
     }
 
     for (i = 0; i < count; i++) {
-        if (!placed[i])
+        if (!svc_order_contains(order, out, i))
             order[out++] = i;
     }
 
@@ -669,11 +783,6 @@ static int svc_sort(lservice_t *svcs, int count, int *order)
         if (svcs[i].before[0] != '\0') {
             dep = svc_find_by_name(svcs, count, svcs[i].before);
             if (dep >= 0) {
-                int my_pos;
-                int dep_pos;
-                int j;
-                int tmp;
-
                 my_pos = -1;
                 dep_pos = -1;
                 for (j = 0; j < count; j++) {
@@ -691,7 +800,6 @@ static int svc_sort(lservice_t *svcs, int count, int *order)
             }
         }
     }
-    free(placed);
     return 0;
 }
 
@@ -705,12 +813,11 @@ void services_start_all(lservice_t *svcs, int count)
     if (count <= 0)
         return;
 
-    order = (int *)malloc(sizeof(int) * count);
+    order = svcs[0].start_order;
     if (!order)
         return;
 
     if (svc_sort(svcs, count, order) < 0) {
-        free(order);
         return;
     }
 
@@ -758,7 +865,6 @@ void services_start_all(lservice_t *svcs, int count)
                 log_fail(svcs[idx].name);
         }
     }
-    free(order);
 }
 
 void services_stop_all(lservice_t *svcs, int count)
@@ -771,7 +877,8 @@ void services_stop_all(lservice_t *svcs, int count)
     }
 }
 
-int service_check_respawn(lservice_t *svcs, int count, int dead_pid)
+int __attribute__((section(".text.hot.user"))) service_check_respawn(
+    lservice_t *svcs, int count, int dead_pid)
 {
     int i;
     int j;
@@ -809,7 +916,8 @@ int service_check_respawn(lservice_t *svcs, int count, int dead_pid)
     return 0;
 }
 
-void services_ensure_instances(lservice_t *svcs, int count)
+void __attribute__((section(".text.hot.user"))) services_ensure_instances(
+    lservice_t *svcs, int count)
 {
     int i;
     int j;
