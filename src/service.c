@@ -6,7 +6,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <fcntl.h>
-#include <stdio.h>
 #include <errno.h>
 #include <lebirun.h>
 #include <dirent.h>
@@ -35,6 +34,40 @@ static int size_mul_checked(size_t left, size_t right, size_t *result)
     return 0;
 }
 
+static void service_write_number(int fd, int value)
+{
+    char buffer[16];
+    unsigned int number;
+    int position;
+
+    position = sizeof(buffer);
+    number = value < 0 ? (unsigned int)(-(value + 1)) + 1 :
+             (unsigned int)value;
+    do {
+        buffer[--position] = (char)('0' + number % 10);
+        number /= 10;
+    } while (number);
+    if (value < 0)
+        buffer[--position] = '-';
+    write(fd, buffer + position, sizeof(buffer) - (size_t)position);
+}
+
+static int service_make_path(char *buffer, size_t capacity,
+                             const char *name)
+{
+    size_t base_length;
+    size_t name_length;
+
+    base_length = sizeof(SERVICES_DIR) - 1;
+    name_length = strlen(name);
+    if (name_length > capacity || base_length + 2 > capacity - name_length)
+        return -1;
+    memcpy(buffer, SERVICES_DIR, base_length);
+    buffer[base_length] = '/';
+    memcpy(buffer + base_length + 1, name, name_length + 1);
+    return 0;
+}
+
 static void service_storage_release(lservice_t *svcs)
 {
     service_storage_t *storage;
@@ -47,32 +80,22 @@ static void service_storage_release(lservice_t *svcs)
 
 static void service_exec_error(const char *path)
 {
-    char buf[192];
     int error;
-    int len;
 
     error = errno;
-    len = snprintf(buf, sizeof(buf), "LebInit: exec %s failed with errno %d\n",
-                   path, error);
-    if (len <= 0)
-        return;
-    if (len >= (int)sizeof(buf))
-        len = sizeof(buf) - 1;
-    write(2, buf, len);
+    write(2, "LebInit: exec ", sizeof("LebInit: exec ") - 1);
+    write(2, path, strlen(path));
+    write(2, " failed with errno ", sizeof(" failed with errno ") - 1);
+    service_write_number(2, error);
+    write(2, "\n", 1);
 }
 
 static void service_console_error(int console_num)
 {
-    char buf[96];
-    int len;
-
-    len = snprintf(buf, sizeof(buf),
-                   "LebInit: console_setid(%d) failed\n", console_num);
-    if (len <= 0)
-        return;
-    if (len >= (int)sizeof(buf))
-        len = sizeof(buf) - 1;
-    write(2, buf, len);
+    write(2, "LebInit: console_setid(",
+          sizeof("LebInit: console_setid(") - 1);
+    service_write_number(2, console_num);
+    write(2, ") failed\n", sizeof(") failed\n") - 1);
 }
 
 static int service_exec_available(const char *path)
@@ -469,7 +492,8 @@ static int services_measure(size_t *config_size)
     while (vfs_readdir(dirfd, name, &type, idx) >= 0) {
         idx++;
         if (service_filename_valid(name, type)) {
-            snprintf(path, sizeof(path), "%s/%s", SERVICES_DIR, name);
+            if (service_make_path(path, sizeof(path), name) != 0)
+                continue;
             capacity = service_config_capacity(path);
             if (capacity > (size_t)-1 - *config_size) {
                 vfs_close_fd(dirfd);
@@ -561,7 +585,8 @@ int services_load(lservice_t **out_svcs)
         if (!service_filename_valid(name, type))
             continue;
 
-        snprintf(path, sizeof(path), "%s/%s", SERVICES_DIR, name);
+        if (service_make_path(path, sizeof(path), name) != 0)
+            continue;
         if (count >= capacity)
             break;
         config_capacity = service_config_capacity(path);
