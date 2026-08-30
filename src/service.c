@@ -13,10 +13,17 @@
 #include "log.h"
 
 #define AUTH_WARM_TRIES 5
+#define SERVICE_BOOTSTRAP_SIZE 2048
 
 typedef struct {
     size_t mapping_size;
 } service_storage_t;
+
+static union {
+    uint64_t alignment;
+    unsigned char data[SERVICE_BOOTSTRAP_SIZE];
+} service_bootstrap;
+static int service_bootstrap_used;
 
 static int size_add_checked(size_t left, size_t right, size_t *result)
 {
@@ -75,7 +82,11 @@ static void service_storage_release(lservice_t *svcs)
     if (!svcs)
         return;
     storage = (service_storage_t *)(void *)svcs - 1;
-    munmap(storage, storage->mapping_size);
+    if (storage->mapping_size) {
+        munmap(storage, storage->mapping_size);
+    } else {
+        service_bootstrap_used = 0;
+    }
 }
 
 static void service_exec_error(const char *path)
@@ -562,11 +573,19 @@ int services_load(lservice_t **out_svcs)
         size_add_checked(allocation_size, 4095, &mapping_size) < 0)
         return 0;
     mapping_size &= ~(size_t)4095;
-    storage = mmap((void *)0, mapping_size, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (storage == MAP_FAILED)
-        return 0;
-    storage->mapping_size = mapping_size;
+    if (allocation_size <= sizeof(service_bootstrap.data) &&
+        !service_bootstrap_used) {
+        storage = (service_storage_t *)(void *)service_bootstrap.data;
+        memset(storage, 0, allocation_size);
+        storage->mapping_size = 0;
+        service_bootstrap_used = 1;
+    } else {
+        storage = mmap((void *)0, mapping_size, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (storage == MAP_FAILED)
+            return 0;
+        storage->mapping_size = mapping_size;
+    }
     svcs = (lservice_t *)(void *)(storage + 1);
     config_storage = (char *)svcs + records_size;
     instance_storage = (int *)(void *)(config_storage + config_aligned_size);
