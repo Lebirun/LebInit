@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <linux/kd.h>
+#include <linux/vt.h>
 #include <lebirun.h>
 #include <dirent.h>
 #include "service.h"
@@ -126,6 +128,43 @@ static int service_exec_available(const char *path)
         header[2] != 'L' || header[3] != 'F')
         return -1;
     return 0;
+}
+
+static int service_console_available(int console_num)
+{
+    char digits[sizeof(unsigned int) * 3];
+    char path[sizeof("/dev/tty") + sizeof(digits)];
+    struct vt_mode mode;
+    unsigned int number;
+    int digit_count;
+    int position;
+    int display_mode;
+    int fd;
+    int i;
+
+    memcpy(path, "/dev/tty", 8);
+    number = (unsigned int)console_num;
+    digit_count = 0;
+    do {
+        digits[digit_count++] = (char)('0' + number % 10);
+        number /= 10;
+    } while (number);
+    position = 8;
+    for (i = digit_count - 1; i >= 0; i--)
+        path[position++] = digits[i];
+    path[position] = '\0';
+    fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return 1;
+    display_mode = KD_TEXT;
+    memset(&mode, 0, sizeof(mode));
+    if (ioctl(fd, KDGETMODE, &display_mode) < 0 ||
+        ioctl(fd, VT_GETMODE, &mode) < 0) {
+        close(fd);
+        return 1;
+    }
+    close(fd);
+    return display_mode == KD_TEXT && mode.mode != VT_PROCESS;
 }
 
 static int warm_auth_file(const char *path)
@@ -661,7 +700,8 @@ static int service_start_internal(lservice_t *svc)
             active_console = console_getcur();
             if (active_console < 0 || active_console >= num_cons)
                 active_console = 0;
-            if (service_spawn_instance(svc, active_console) > 0)
+            if (service_console_available(active_console) &&
+                service_spawn_instance(svc, active_console) > 0)
                 started_count++;
         } else {
             for (i = 0; i < num_cons; i++) {
@@ -935,6 +975,9 @@ int __attribute__((section(".text.hot.user"))) service_check_respawn(
                 svcs[i].instance_pids[j] = -1;
                 if (svcs[i].restart == SVC_RESTART_ALWAYS ||
                     svcs[i].restart == SVC_RESTART_ONFAIL) {
+                    if (strcmp(svcs[i].exec_start, GETTY_PATH) == 0 &&
+                        !service_console_available(j))
+                        return 1;
                     if (svcs[i].restart_delay > 0)
                         sleep(svcs[i].restart_delay);
                     if (service_spawn_instance(&svcs[i], j) < 0)
@@ -979,7 +1022,8 @@ void __attribute__((section(".text.hot.user"))) services_ensure_instances(
             if (active_console < 0 ||
                 active_console >= svcs[i].instance_count)
                 continue;
-            if (svcs[i].instance_pids[active_console] <= 0)
+            if (svcs[i].instance_pids[active_console] <= 0 &&
+                service_console_available(active_console))
                 service_spawn_instance(&svcs[i], active_console);
         } else {
             for (j = 0; j < svcs[i].instance_count; j++) {
