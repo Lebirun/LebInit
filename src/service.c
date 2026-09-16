@@ -234,6 +234,8 @@ int get_num_consoles(void)
         val = atoi(p);
         if (val < 1)
             val = 1;
+        if (val > 16)
+            val = 16;
     }
     return val;
 }
@@ -648,6 +650,7 @@ int services_load(lservice_t **out_svcs)
         if (count >= capacity)
             break;
         config_capacity = service_config_capacity(path);
+        if (config_offset > config_size) break;
         if (config_capacity > config_size - config_offset)
             config_capacity = config_size - config_offset;
         if (parse_lservice(path, &svcs[count],
