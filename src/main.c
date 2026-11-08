@@ -5,6 +5,7 @@
 #include <lebirun/syscall.h>
 #include <fcntl.h>
 #include <string.h>
+#include <time.h>
 #include "log.h"
 #include "service.h"
 
@@ -58,10 +59,19 @@ static void setup_signals(void)
 
 static void kill_all_children(void)
 {
+    struct timespec delay = { 0, 50000000 };
     int status;
+    int wpid;
+    int i;
 
     kill(-1, SIGTERM);
-    sleep(1);
+    for (i = 0; i < 20; i++) {
+        while ((wpid = waitpid(-1, &status, WNOHANG)) > 0)
+            ;
+        if (wpid < 0)
+            break;
+        nanosleep(&delay, (void *)0);
+    }
     kill(-1, SIGKILL);
     while (waitpid(-1, &status, WNOHANG) > 0)
         ;
