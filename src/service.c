@@ -747,7 +747,8 @@ static int service_start_internal(lservice_t *svc)
 
     if (svc->type == SVC_TYPE_ONESHOT) {
         int st;
-        waitpid(pid, &st, 0);
+        while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
+            ;
         svc->pid = -1;
     }
 
@@ -793,7 +794,8 @@ void service_stop(lservice_t *svc)
                 _exit(127);
             }
             if (pid > 0)
-                waitpid(pid, &st, 0);
+                while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
+                    ;
         }
         kill(svc->pid, SIGTERM);
         svc->pid = -1;
@@ -967,6 +969,7 @@ void services_stop_all(lservice_t *svcs, int count)
 int __attribute__((section(".text.hot.user"))) service_check_respawn(
     lservice_t *svcs, int count, int dead_pid)
 {
+    unsigned int k;
     int i;
     int j;
 
@@ -982,7 +985,8 @@ int __attribute__((section(".text.hot.user"))) service_check_respawn(
                         !service_console_available(j))
                         return 1;
                     if (svcs[i].restart_delay > 0)
-                        sleep(svcs[i].restart_delay);
+                        for (k = svcs[i].restart_delay; k > 0; k = sleep(k))
+                            ;
                     if (service_spawn_instance(&svcs[i], j) < 0)
                         return 0;
                     return 1;
@@ -996,7 +1000,8 @@ int __attribute__((section(".text.hot.user"))) service_check_respawn(
             if (svcs[i].restart == SVC_RESTART_ALWAYS ||
                 svcs[i].restart == SVC_RESTART_ONFAIL) {
                 if (svcs[i].restart_delay > 0)
-                    sleep(svcs[i].restart_delay);
+                    for (k = svcs[i].restart_delay; k > 0; k = sleep(k))
+                        ;
                 service_start(&svcs[i]);
                 return 1;
             }

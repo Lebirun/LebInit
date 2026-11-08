@@ -41,6 +41,11 @@ static void handle_sigterm(int sig)
     g_soft_reboot = 1;
 }
 
+static void handle_sigchld(int sig)
+{
+    (void)sig;
+}
+
 static void setup_signals(void)
 {
     struct sigaction sa;
@@ -55,6 +60,10 @@ static void setup_signals(void)
 
     sa.sa_handler = handle_sigterm;
     sigaction(SIGTERM, &sa, (void *)0);
+
+    sa.sa_handler = handle_sigchld;
+    sa.sa_flags = SA_NOCLDSTOP;
+    sigaction(SIGCHLD, &sa, (void *)0);
 }
 
 static void kill_all_children(void)
